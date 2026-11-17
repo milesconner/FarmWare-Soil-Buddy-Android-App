@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/home_dashboard_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F4F7F1"
+    tools:context=".MainActivity">
+
+    <ScrollView
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:fillViewport="true"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="20dp"
+            android:paddingTop="24dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="28dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SOIL BUDDY"
+                android:textColor="#55734B"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.12" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Your growing space"
+                android:textColor="#1D2A1D"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <View
+                    android:id="@+id/connection_dot"
+                    android:layout_width="9dp"
+                    android:layout_height="9dp"
+                    android:background="@drawable/status_dot" />
+                <TextView
+                    android:id="@+id/connection_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="Connecting to sensor"
+                    android:textColor="#526052"
+                    android:textSize="13sp" />
+                <TextView
+                    android:id="@+id/data_time_text"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="end"
+                    android:text="Waiting for reading"
+                    android:textColor="#778177"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="SOIL MOISTURE"
+                android:textColor="#607060"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:background="@drawable/card_primary"
+                android:orientation="vertical"
+                android:padding="20dp">
+                <TextView
+                    android:id="@+id/moisture_percent_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="--%"
+                    android:textColor="#FFFFFF"
+                    android:textSize="46sp"
+                    android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/moisture_summary_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Waiting for soil reading"
+                    android:textColor="#E4F0DE"
+                    android:textSize="14sp" />
+                <ProgressBar
+                    android:id="@+id/moisture_progress"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="8dp"
+                    android:layout_marginTop="18dp"
+                    android:max="100"
+                    android:progress="0"
+                    android:progressBackgroundTint="#638161"
+                    android:progressTint="#D9E9A4" />
+                <TextView
+                    android:id="@+id/stemma_moisture_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="Raw capacitance: --"
+                    android:textColor="#E4F0DE"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="25dp"
+                android:text="ENVIRONMENT"
+                android:textColor="#607060"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:orientation="horizontal">
+                <include layout="@layout/metric_temperature" />
+                <include layout="@layout/metric_humidity" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+                <include layout="@layout/metric_air_quality" />
+                <include layout="@layout/metric_co2" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+                <include layout="@layout/metric_vpd" />
+                <include layout="@layout/metric_probe_temp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="25dp"
+                android:text="NUTRIENTS"
+                android:textColor="#607060"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:background="@drawable/card_surface"
+                android:orientation="vertical"
+                android:padding="16dp">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal" android:paddingVertical="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Nitrogen (N)" android:textColor="#263326" android:textSize="15sp" />
+                    <TextView android:id="@+id/nitrogen_text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Raw: --" android:textColor="#263326" android:textSize="15sp" android:textStyle="bold" />
+                </LinearLayout>
+                <TextView android:id="@+id/nitrogen_level_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Waiting for reading" android:textColor="#708070" android:textSize="12sp" android:paddingBottom="8dp" />
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#E8EDE5" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal" android:paddingTop="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Phosphorus (P)" android:textColor="#263326" android:textSize="15sp" />
+                    <TextView android:id="@+id/phosphorus_text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Raw: --" android:textColor="#263326" android:textSize="15sp" android:textStyle="bold" />
+                </LinearLayout>
+                <TextView android:id="@+id/phosphorus_level_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Waiting for reading" android:textColor="#708070" android:textSize="12sp" android:paddingBottom="8dp" />
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#E8EDE5" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal" android:paddingTop="8dp">
+                    <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Potassium (K)" android:textColor="#263326" android:textSize="15sp" />
+                    <TextView android:id="@+id/potassium_text" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Raw: --" android:textColor="#263326" android:textSize="15sp" android:textStyle="bold" />
+                </LinearLayout>
+                <TextView android:id="@+id/potassium_level_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Waiting for reading" android:textColor="#708070" android:textSize="12sp" android:paddingBottom="8dp" />
+            </LinearLayout>
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="7dp"
+                android:text="NPK levels use temporary test thresholds and are not calibrated yet."
+                android:textColor="#829082"
+                android:textSize="11sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="Air quality sensor accuracy"
+                android:textColor="#607060"
+                android:textSize="12sp" />
+            <TextView
+                android:id="@+id/bme_acc_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Waiting for sensor data"
+                android:textColor="#263326"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </ScrollView>
+</androidx.constraintlayout.widget.ConstraintLayout>
