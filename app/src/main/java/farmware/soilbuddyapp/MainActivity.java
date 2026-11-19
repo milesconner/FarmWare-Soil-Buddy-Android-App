@@ -1,8 +1,14 @@
 package farmware.soilbuddyapp;
 
+import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
@@ -48,10 +54,14 @@ public class MainActivity extends AppCompatActivity {
     private static final String SAMPLING_INTERVAL_TOPIC = "soil-buddy-prototype/sampling-interval";
     private static final int MAX_SAMPLING_INTERVAL_MS = 65_535;
     private static final long DAY_MILLIS = 24L * 60L * 60L * 1000L;
+    private static final String CACHE_PREFS = "soil_buddy_latest_telemetry";
+    private static final long INITIAL_RETRY_DELAY_MS = 2_000L;
+    private static final long MAX_RETRY_DELAY_MS = 30_000L;
 
-    // Temporary comparison points for the NPK field test. Replace after calibration.
-    private static final double NPK_LOW_MAX = 100.0;
-    private static final double NPK_MEDIUM_MAX = 300.0;
+    // Temporary, separate comparison points for the NPK field test. Replace after calibration.
+    private static final NpkThreshold NITROGEN_THRESHOLDS = new NpkThreshold("npk_raw_nit", "Nitrogen", 100, 300);
+    private static final NpkThreshold PHOSPHORUS_THRESHOLDS = new NpkThreshold("npk_raw_phos", "Phosphorus", 50, 150);
+    private static final NpkThreshold POTASSIUM_THRESHOLDS = new NpkThreshold("npk_raw_pot", "Potassium", 150, 400);
 
     private static final String[] SECTION_TABS = {"Home", "Temperature", "Moisture", "Air Quality", "NPK", "Configuration"};
     private static final int[] RANGE_HOURS = {24, 24 * 7, 24 * 31, 24 * 365};
@@ -65,23 +75,69 @@ public class MainActivity extends AppCompatActivity {
         final Float minimum;
         final Float maximum;
         final int color;
+        final NpkThreshold npkThreshold;
+        final boolean categoricalLevel;
 
-        MetricDefinition(String key, String title, String unit, Float minimum, Float maximum, int color) {
+        MetricDefinition(String key, String title, String unit, Float minimum, Float maximum, int color,
+                         NpkThreshold npkThreshold, boolean categoricalLevel) {
             this.key = key;
             this.title = title;
             this.unit = unit;
             this.minimum = minimum;
             this.maximum = maximum;
             this.color = color;
+            this.npkThreshold = npkThreshold;
+            this.categoricalLevel = categoricalLevel;
+        }
+    }
+
+    private static class NpkThreshold {
+        final String metricKey;
+        final String nutrient;
+        final double lowMaximum;
+        final double mediumMaximum;
+
+        NpkThreshold(String metricKey, String nutrient, double lowMaximum, double mediumMaximum) {
+            this.metricKey = metricKey;
+            this.nutrient = nutrient;
+            this.lowMaximum = lowMaximum;
+            this.mediumMaximum = mediumMaximum;
+        }
+
+        float category(double value) {
+            if (value <= lowMaximum) return 0f;
+            if (value <= mediumMaximum) return 1f;
+            return 2f;
+        }
+
+        String categoryName(double value) {
+            if (value <= lowMaximum) return "Low";
+            if (value <= mediumMaximum) return "Medium";
+            return "High";
+        }
+
+        String description() {
+            return "Provisional: Low ≤" + formatThreshold(lowMaximum)
+                    + ", Medium ≤" + formatThreshold(mediumMaximum)
+                    + ", High >" + formatThreshold(mediumMaximum);
+        }
+
+        private String formatThreshold(double value) {
+            String formatted = String.format(Locale.US, "%.2f", value);
+            while (formatted.contains(".") && formatted.endsWith("0")) {
+                formatted = formatted.substring(0, formatted.length() - 1);
+            }
+            if (formatted.endsWith(".")) formatted = formatted.substring(0, formatted.length() - 1);
+            return formatted;
         }
     }
 
     private static class ActiveGraph {
-        final String metricKey;
+        final MetricDefinition metric;
         final MoistureChartView chart;
 
-        ActiveGraph(String metricKey, MoistureChartView chart) {
-            this.metricKey = metricKey;
+        ActiveGraph(MetricDefinition metric, MoistureChartView chart) {
+            this.metric = metric;
             this.chart = chart;
         }
     }
@@ -119,7 +175,16 @@ public class MainActivity extends AppCompatActivity {
     private TextView configMessage;
     private TelemetryHistoryStore historyStore;
     private final ExecutorService historyExecutor = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final List<ActiveGraph> activeGraphs = new ArrayList<>();
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private Runnable reconnectRunnable;
+    private long reconnectDelayMs = INITIAL_RETRY_DELAY_MS;
+    private long connectionAttemptId;
+    private boolean mqttConnecting;
+    private boolean mqttDisconnecting;
+    private boolean hasCachedTelemetry;
     private String selectedSection = "Home";
     private int selectedRangeIndex;
 
@@ -140,6 +205,7 @@ public class MainActivity extends AppCompatActivity {
         historyStore = new TelemetryHistoryStore(this);
         createHomeDashboard();
         createNavigation();
+        loadCachedTelemetry();
         maintainHistory();
         connectMqtt();
     }
@@ -239,7 +305,10 @@ public class MainActivity extends AppCompatActivity {
 
             TextView metricTitle = text(metric.title, 16, 0xFF263326, true);
             card.addView(metricTitle);
-            TextView unit = text(metric.unit.isEmpty() ? "Raw sensor value" : "Unit: " + metric.unit, 12, 0xFF778477, false);
+            String metricSubtitle = metric.npkThreshold != null
+                    ? (metric.categoricalLevel ? metric.npkThreshold.description() : "Raw value sent by sensor · " + metric.unit)
+                    : (metric.unit.isEmpty() ? "Raw sensor value" : "Unit: " + metric.unit);
+            TextView unit = text(metricSubtitle, 12, 0xFF778477, false);
             LinearLayout.LayoutParams unitParams = new LinearLayout.LayoutParams(-1, -2);
             unitParams.topMargin = dp(3);
             card.addView(unit, unitParams);
@@ -248,10 +317,11 @@ public class MainActivity extends AppCompatActivity {
             chart.setRangeHours(RANGE_HOURS[selectedRangeIndex]);
             chart.setLineColor(metric.color);
             chart.setYAxisBounds(metric.minimum, metric.maximum);
+            if (metric.categoricalLevel) chart.setCategoricalLabels("Low", "Medium", "High");
             LinearLayout.LayoutParams chartParams = new LinearLayout.LayoutParams(-1, dp(192));
             chartParams.topMargin = dp(8);
             card.addView(chart, chartParams);
-            activeGraphs.add(new ActiveGraph(metric.key, chart));
+            activeGraphs.add(new ActiveGraph(metric, chart));
         }
         return scroll;
     }
@@ -273,15 +343,26 @@ public class MainActivity extends AppCompatActivity {
                 metric("bme_acc", "Air sensor accuracy", "0–3", 0f, 3f, 0xFF8A9B58)
         };
         if ("NPK".equals(section)) return new MetricDefinition[]{
-                metric("npk_raw_nit", "Nitrogen (N)", "raw value", null, null, GROUP_COLORS[3]),
-                metric("npk_raw_phos", "Phosphorus (P)", "raw value", null, null, 0xFFB28E59),
-                metric("npk_raw_pot", "Potassium (K)", "raw value", null, null, 0xFF8D754A)
+                npkRaw(NITROGEN_THRESHOLDS, "Nitrogen (N)", GROUP_COLORS[3]),
+                npkLevel(NITROGEN_THRESHOLDS, "Nitrogen level (provisional)", 0xFF78925D),
+                npkRaw(PHOSPHORUS_THRESHOLDS, "Phosphorus (P)", 0xFFB28E59),
+                npkLevel(PHOSPHORUS_THRESHOLDS, "Phosphorus level (provisional)", 0xFFC5A36B),
+                npkRaw(POTASSIUM_THRESHOLDS, "Potassium (K)", 0xFF8D754A),
+                npkLevel(POTASSIUM_THRESHOLDS, "Potassium level (provisional)", 0xFFAA946D)
         };
         return new MetricDefinition[0];
     }
 
     private MetricDefinition metric(String key, String title, String unit, Float minimum, Float maximum, int color) {
-        return new MetricDefinition(key, title, unit, minimum, maximum, color);
+        return new MetricDefinition(key, title, unit, minimum, maximum, color, null, false);
+    }
+
+    private MetricDefinition npkRaw(NpkThreshold thresholds, String title, int color) {
+        return new MetricDefinition(thresholds.metricKey, title, "raw value", null, null, color, thresholds, false);
+    }
+
+    private MetricDefinition npkLevel(NpkThreshold thresholds, String title, int color) {
+        return new MetricDefinition(thresholds.metricKey, title, "status", 0f, 2f, color, thresholds, true);
     }
 
     private int colorForSection(String section) {
@@ -297,7 +378,18 @@ public class MainActivity extends AppCompatActivity {
         long since = System.currentTimeMillis() - RANGE_HOURS[selectedRangeIndex] * 60L * 60L * 1000L;
         historyExecutor.execute(() -> {
             Map<ActiveGraph, List<MoistureChartView.Point>> result = new HashMap<>();
-            for (ActiveGraph graph : graphs) result.put(graph, historyStore.getSince(graph.metricKey, since));
+            for (ActiveGraph graph : graphs) {
+                List<MoistureChartView.Point> points = historyStore.getSince(graph.metric.key, since);
+                if (graph.metric.categoricalLevel) {
+                    List<MoistureChartView.Point> categories = new ArrayList<>(points.size());
+                    for (MoistureChartView.Point point : points) {
+                        categories.add(new MoistureChartView.Point(
+                                point.timeMillis, graph.metric.npkThreshold.category(point.value)));
+                    }
+                    points = categories;
+                }
+                result.put(graph, points);
+            }
             runOnUiThread(() -> {
                 for (Map.Entry<ActiveGraph, List<MoistureChartView.Point>> entry : result.entrySet()) {
                     entry.getKey().chart.setPoints(entry.getValue());
@@ -466,6 +558,18 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void loadCachedTelemetry() {
+        android.content.SharedPreferences preferences = getSharedPreferences(CACHE_PREFS, MODE_PRIVATE);
+        String payload = preferences.getString("payload", null);
+        String topic = preferences.getString("topic", DATA_TOPIC);
+        if (payload == null || payload.trim().isEmpty()) {
+            setConnectionStatus("No saved reading yet", false);
+            return;
+        }
+        hasCachedTelemetry = true;
+        renderPayload(topic, payload, false);
+    }
+
     private void connectMqtt() {
         client = MqttClient.builder()
                 .useMqttVersion3()
@@ -475,6 +579,86 @@ public class MainActivity extends AppCompatActivity {
                 .useSslWithDefaultConfig()
                 .buildAsync();
 
+        registerNetworkMonitor();
+        if (hasValidatedNetwork()) attemptMqttConnection();
+        else {
+            setConnectionStatus(hasCachedTelemetry ? "Offline · showing last saved reading" : "Waiting for internet connection", false);
+            scheduleReconnect();
+        }
+    }
+
+    private void registerNetworkMonitor() {
+        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                mainHandler.post(() -> onNetworkAvailable());
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    mainHandler.post(() -> onNetworkAvailable());
+                }
+            }
+
+            @Override
+            public void onLost(Network network) {
+                mainHandler.post(() -> onNetworkStateChanged());
+            }
+        };
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+        } catch (RuntimeException exception) {
+            networkCallback = null;
+        }
+    }
+
+    private boolean hasValidatedNetwork() {
+        if (connectivityManager == null) return false;
+        Network active = connectivityManager.getActiveNetwork();
+        if (active == null) return false;
+        NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(active);
+        return capabilities != null
+                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+    }
+
+    private void onNetworkAvailable() {
+        if (!hasValidatedNetwork()) return;
+        cancelScheduledReconnect();
+        if (!mqttConnected) {
+            setConnectionStatus(hasCachedTelemetry
+                    ? "Network available · reconnecting, showing saved reading"
+                    : "Network available · connecting", false);
+            attemptMqttConnection();
+        }
+    }
+
+    private void onNetworkStateChanged() {
+        if (hasValidatedNetwork()) {
+            onNetworkAvailable();
+            return;
+        }
+        connectionAttemptId++;
+        mqttConnected = false;
+        mqttConnecting = false;
+        setConnectionStatus(hasCachedTelemetry ? "Offline · showing last saved reading" : "Waiting for internet connection", false);
+        disconnectClientThenRetry();
+    }
+
+    private void attemptMqttConnection() {
+        if (client == null || mqttConnected || mqttConnecting || mqttDisconnecting) return;
+        if (!hasValidatedNetwork()) {
+            setConnectionStatus(hasCachedTelemetry ? "Offline · showing last saved reading" : "Waiting for internet connection", false);
+            scheduleReconnect();
+            return;
+        }
+        cancelScheduledReconnect();
+        mqttConnecting = true;
+        long attemptId = ++connectionAttemptId;
+        setConnectionStatus(hasCachedTelemetry ? "Connecting · showing last saved reading" : "Connecting to gateway", false);
         client.connectWith()
                 .simpleAuth()
                 .username("SoilBuddyPrototype")
@@ -482,15 +666,53 @@ public class MainActivity extends AppCompatActivity {
                 .applySimpleAuth()
                 .send()
                 .whenComplete((connAck, error) -> runOnUiThread(() -> {
+                    if (attemptId != connectionAttemptId) return;
+                    mqttConnecting = false;
                     if (error != null) {
                         mqttConnected = false;
-                        setConnectionStatus("Connection unavailable", false);
+                        setConnectionStatus(hasCachedTelemetry ? "Offline · showing last saved reading" : "Connection unavailable", false);
+                        scheduleReconnect();
                     } else {
                         mqttConnected = true;
+                        reconnectDelayMs = INITIAL_RETRY_DELAY_MS;
                         setConnectionStatus("Connected · waiting for sensor", true);
                         subscribeToTelemetry();
                     }
                 }));
+    }
+
+    private void scheduleReconnect() {
+        if (reconnectRunnable != null) return;
+        long delay = reconnectDelayMs;
+        reconnectDelayMs = Math.min(MAX_RETRY_DELAY_MS, reconnectDelayMs * 2);
+        reconnectRunnable = () -> {
+            reconnectRunnable = null;
+            attemptMqttConnection();
+        };
+        mainHandler.postDelayed(reconnectRunnable, delay);
+    }
+
+    private void cancelScheduledReconnect() {
+        if (reconnectRunnable != null) {
+            mainHandler.removeCallbacks(reconnectRunnable);
+            reconnectRunnable = null;
+        }
+    }
+
+    private void disconnectClientThenRetry() {
+        connectionAttemptId++;
+        mqttConnected = false;
+        mqttConnecting = false;
+        if (client == null || mqttDisconnecting) {
+            scheduleReconnect();
+            return;
+        }
+        mqttDisconnecting = true;
+        client.disconnect().whenComplete((ignored, error) -> mainHandler.post(() -> {
+            mqttDisconnecting = false;
+            if (hasValidatedNetwork()) attemptMqttConnection();
+            else scheduleReconnect();
+        }));
     }
 
     private void subscribeToTelemetry() {
@@ -499,28 +721,40 @@ public class MainActivity extends AppCompatActivity {
                 .callback(publish -> {
                     String topic = publish.getTopic().toString();
                     String payload = new String(publish.getPayloadAsBytes(), StandardCharsets.UTF_8);
-                    runOnUiThread(() -> renderPayload(topic, payload));
+                    runOnUiThread(() -> renderPayload(topic, payload, true));
                 })
                 .send()
                 .whenComplete((subAck, error) -> runOnUiThread(() -> {
-                    if (error != null) setConnectionStatus("Connected · subscription failed", false);
+                    if (error != null) {
+                        setConnectionStatus("Subscription failed · reconnecting", false);
+                        disconnectClientThenRetry();
+                    }
                 }));
     }
 
-    private void renderPayload(String topic, String payload) {
+    private void renderPayload(String topic, String payload, boolean fromMqtt) {
         try {
             if (payload.trim().startsWith("{")) {
-                renderJson(new JSONObject(payload));
+                renderJson(new JSONObject(payload), fromMqtt);
             } else {
                 renderScalar(topic, payload.trim());
             }
-            setConnectionStatus("Live sensor data", true);
+            if (fromMqtt) {
+                getSharedPreferences(CACHE_PREFS, MODE_PRIVATE).edit()
+                        .putString("topic", topic)
+                        .putString("payload", payload)
+                        .apply();
+                hasCachedTelemetry = true;
+                setConnectionStatus("Live sensor data", true);
+            } else {
+                setConnectionStatus("Offline · showing last saved reading", false);
+            }
         } catch (JSONException exception) {
             setConnectionStatus("Received unreadable data", false);
         }
     }
 
-    private void renderJson(JSONObject packet) {
+    private void renderJson(JSONObject packet, boolean persistHistory) {
         setMetric(packet, airTemperature, "°C", "bme_temp", "bmeTemp");
         setMetric(packet, humidity, "%", "bme_humid", "bmeHumid");
         setMetric(packet, airQuality, " IAQ", "bme_iaq", "bmeIaq");
@@ -529,9 +763,9 @@ public class MainActivity extends AppCompatActivity {
         setMetric(packet, probeTemperature, "°C", "probe_temp", "probeTemperature");
         setMetric(packet, rawMoisture, "", "stemma_raw_moisture", "stemma_moisture");
         setMetric(packet, accuracy, "", "bme_acc", "bmeAcc");
-        setNpkMetric(packet, nitrogen, nitrogenLevel, "Nitrogen", "npk_raw_nit");
-        setNpkMetric(packet, phosphorus, phosphorusLevel, "Phosphorus", "npk_raw_phos");
-        setNpkMetric(packet, potassium, potassiumLevel, "Potassium", "npk_raw_pot");
+        setNpkMetric(packet, nitrogen, nitrogenLevel, NITROGEN_THRESHOLDS);
+        setNpkMetric(packet, phosphorus, phosphorusLevel, PHOSPHORUS_THRESHOLDS);
+        setNpkMetric(packet, potassium, potassiumLevel, POTASSIUM_THRESHOLDS);
 
         String percent = find(packet, "stemma_moisture_percent", "moisture_percent", "moisturePercentage");
         if (percent != null) setMoisturePercent(percent);
@@ -541,7 +775,7 @@ public class MainActivity extends AppCompatActivity {
             homeReadingTime.setText("Updated " + timestamp);
             timeMillis = parseGatewayTimestamp(timestamp);
         }
-        if (timeMillis != null) {
+        if (persistHistory && timeMillis != null) {
             Map<String, Double> values = new HashMap<>();
             putNumeric(values, "bme_temp", find(packet, "bme_temp"));
             putNumeric(values, "probe_temp", find(packet, "probe_temp"));
@@ -590,22 +824,22 @@ public class MainActivity extends AppCompatActivity {
             case "stemma-moisture": rawMoisture.setText("Raw capacitance: " + value); break;
             case "bme-acc": accuracy.setText("Sensor accuracy: " + value + " / 3"); break;
             case "data-time": homeReadingTime.setText("Updated " + value); break;
-            case "npk-raw-nit": setNpkScalar(nitrogen, nitrogenLevel, "Nitrogen", value); break;
-            case "npk-raw-phos": setNpkScalar(phosphorus, phosphorusLevel, "Phosphorus", value); break;
-            case "npk-raw-pot": setNpkScalar(potassium, potassiumLevel, "Potassium", value); break;
+            case "npk-raw-nit": setNpkScalar(nitrogen, nitrogenLevel, NITROGEN_THRESHOLDS, value); break;
+            case "npk-raw-phos": setNpkScalar(phosphorus, phosphorusLevel, PHOSPHORUS_THRESHOLDS, value); break;
+            case "npk-raw-pot": setNpkScalar(potassium, potassiumLevel, POTASSIUM_THRESHOLDS, value); break;
             case "moisture-percent": setMoisturePercent(value); break;
             default: break;
         }
     }
 
-    private void setNpkScalar(TextView rawView, TextView levelView, String name, String value) {
+    private void setNpkScalar(TextView rawView, TextView levelView, NpkThreshold thresholds, String value) {
         rawView.setText("Raw: " + value);
         try {
             double number = Double.parseDouble(value);
-            String level = number <= NPK_LOW_MAX ? "Low" : number <= NPK_MEDIUM_MAX ? "Medium" : "High";
-            levelView.setText(level + " · placeholder threshold");
+            String level = thresholds.categoryName(number);
+            levelView.setText("Provisional: " + level);
         } catch (NumberFormatException ignored) {
-            levelView.setText(name + " value unavailable for comparison");
+            levelView.setText(thresholds.nutrient + " value unavailable for comparison");
         }
     }
 
@@ -619,13 +853,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setNpkMetric(JSONObject packet, TextView rawView, TextView levelView,
-                              String nutrient, String... keys) {
-        String rawValue = find(packet, keys);
+                              NpkThreshold thresholds) {
+        String rawValue = find(packet, thresholds.metricKey);
         if (rawValue == null) return;
-        setNpkScalar(rawView, levelView, nutrient, rawValue);
+        setNpkScalar(rawView, levelView, thresholds, rawValue);
         try {
             double value = Double.parseDouble(rawValue);
-            String level = value <= NPK_LOW_MAX ? "Low" : value <= NPK_MEDIUM_MAX ? "Medium" : "High";
+            String level = thresholds.categoryName(value);
             levelView.setTextColor(Color.parseColor(
                     "Low".equals(level) ? "#A36A3C" : "Medium".equals(level) ? "#A17A21" : "#4F7651"));
         } catch (NumberFormatException ignored) {
@@ -684,6 +918,15 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        cancelScheduledReconnect();
+        mainHandler.removeCallbacksAndMessages(null);
+        if (connectivityManager != null && networkCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            } catch (IllegalArgumentException ignored) {
+                // The callback may already have been unregistered by the system.
+            }
+        }
         if (client != null) client.disconnect();
         historyExecutor.shutdown();
         if (historyStore != null) historyStore.close();

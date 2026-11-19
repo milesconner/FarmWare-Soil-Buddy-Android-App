@@ -33,6 +33,8 @@ public class MoistureChartView extends View {
     private long rangeMillis = DAY;
     private Float fixedMinimum;
     private Float fixedMaximum;
+    private String[] categoricalLabels;
+    private boolean stepLine;
 
     public MoistureChartView(Context context) {
         this(context, null);
@@ -71,6 +73,14 @@ public class MoistureChartView extends View {
     public void setLineColor(int color) {
         linePaint.setColor(color);
         pointPaint.setColor(color);
+        invalidate();
+    }
+
+    public void setCategoricalLabels(String low, String medium, String high) {
+        categoricalLabels = new String[]{low, medium, high};
+        fixedMinimum = 0f;
+        fixedMaximum = 2f;
+        stepLine = true;
         invalidate();
     }
 
@@ -117,7 +127,9 @@ public class MoistureChartView extends View {
             float y = top + (bottom - top) * fraction;
             canvas.drawLine(left, y, right, y, gridPaint);
             float labelValue = maxValue - (maxValue - minValue) * fraction;
-            String label = formatValue(labelValue);
+            String label = categoricalLabels == null
+                    ? formatValue(labelValue)
+                    : categoricalLabels[2 - tick];
             canvas.drawText(label, left - dp(6) - textPaint.measureText(label), y + dp(4), textPaint);
         }
 
@@ -142,7 +154,17 @@ public class MoistureChartView extends View {
             float x = left + (right - left) * (point.timeMillis - startTime) / (float) rangeMillis;
             float value = Math.max(minValue, Math.min(maxValue, point.value));
             float y = bottom - (bottom - top) * (value - minValue) / (maxValue - minValue);
-            if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+            if (i == 0) {
+                path.moveTo(x, y);
+            } else if (stepLine) {
+                Point previous = drawPoints.get(i - 1);
+                float previousValue = Math.max(minValue, Math.min(maxValue, previous.value));
+                float previousY = bottom - (bottom - top) * (previousValue - minValue) / (maxValue - minValue);
+                path.lineTo(x, previousY);
+                path.lineTo(x, y);
+            } else {
+                path.lineTo(x, y);
+            }
         }
         canvas.drawPath(path, linePaint);
 

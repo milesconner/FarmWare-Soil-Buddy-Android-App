@@ -203,7 +203,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="7dp"
-                android:text="NPK levels use temporary test thresholds and are not calibrated yet."
+                android:text="NPK levels use separate provisional thresholds for N, P, and K until field testing is complete."
                 android:textColor="#829082"
                 android:textSize="11sp" />
 
